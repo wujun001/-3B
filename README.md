@@ -16,7 +16,9 @@ sudo apt-get install libcurl4-gnutls-dev
 
 sudo apt-get install  libjsoncpp-dev
 
-#3.mpalyer，开源多媒体播放器
+# 依赖程序
+#mpalyer，开源多媒体播放器
+
 sudo apt-get install mplayer
 
 # 编译命令
