@@ -234,10 +234,8 @@ void PlayMusic(){
 int main(){
 
     while(1){
-        if (GetTime()){
-            if (mojiWeatherAPI()){
-                PlayMusic();
-            }
+        if (GetTime() && mojiWeatherAPI()){
+            PlayMusic();
         }
         system("sleep 0.5");
     }
