@@ -1,140 +1,115 @@
-#include <stdio.h>
-#include <curl/curl.h>
-#include <jsoncpp/json/json.h>
-#include <string>
 #include <iostream>
+#include <cstdlib>
+#include <vector>
 #include <regex>
+#include <string>
+#include <ctime>
 
+#include "support.h"
+#if WIN32
+    #include <windows.h>
+#endif
 using namespace std;
 
-static size_t OnWriteData(void* buffer, size_t size, size_t nmemb, void* lpVoid)
+extern std::smatch results;
+
+struct AlarmTime
 {
-    std::string* str = dynamic_cast<std::string*>((std::string *)lpVoid);
-    if( NULL == str || NULL == buffer )
-    {
-        return -1;
-    }
+    int hour;
+    int minute;
+    bool onceADay;
+};
 
-    char* pData = (char*)buffer;
-    str->append(pData, size * nmemb);
-    //*str = UTF8ToGBK(*str);   //服务器采用UTF8，本程序采用GBK编码，需要转换一下 
-    return nmemb;
-}
+vector<AlarmTime> g_vAlarmTime; //闹钟时间
 
-int dealResCode(CURL* curl, const CURLcode res)
+int g_nBlueMusicBoxPreviousPlayMinute = 0; //避免蓝牙音箱自动关机
+char g_szCurrentTime[100] = {0};
+
+void initAlarmTime();
+bool matchAlarmTime();
+void getWeather();
+void playWeather();
+void playTime();
+void playMusic();
+
+
+int main(int argc, char *argv[])
 {
-    //输出返回码代表的意思
-    int nCode = 0;
-    const char* pRes = NULL;
-    pRes = curl_easy_strerror(res);
-    printf("%s\n",pRes);
+    initAlarmTime();
 
-    //http返回码
-    long lResCode = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &lResCode);
-
-    if(CURLE_OK != res || 200 != lResCode)
+    while(1)
     {
-        //curl传送失败
-        if(CURLE_OPERATION_TIMEOUTED == res)
+        if (true == matchAlarmTime())
         {
-            nCode = 1;   //超时返回
+            getWeather();
+            playTime();
+            playWeather();
+            playMusic();
         }
-        else
+    #if WIN32
+        Sleep(500);
+    #else
+        system("sleep 0.5");
+    #endif
+        cout << "clock is running!" << endl;
+    }
+
+    return 0;
+}
+
+
+void initAlarmTime()
+{
+    struct AlarmTime time1 = {7, 0, false};
+    struct AlarmTime time2 = {7, 30, false};
+    struct AlarmTime time3 = {20, 18, false};
+    g_vAlarmTime.push_back(time1);
+    g_vAlarmTime.push_back(time2);
+    g_vAlarmTime.push_back(time3);
+}
+
+
+bool matchAlarmTime()
+{
+    time_t timep;
+    time(&timep);
+    tm *Local = localtime(&timep);
+
+    //蓝牙间隙播放避免关机
+    if (Local->tm_min % 4 == 0 && 30 == Local->tm_sec && g_nBlueMusicBoxPreviousPlayMinute != Local->tm_min){
+
+#if WIN32
+    cout << "蓝牙音箱心跳" << endl;
+#else
+    system("mplayer \"heartbeat.mp3\"");
+#endif
+        g_nBlueMusicBoxPreviousPlayMinute = Local->tm_min;
+    }
+
+    //清空一天一次标志
+    if (Local->tm_hour == 0 && Local->tm_min == 0)
+    {
+        for (vector<AlarmTime>::iterator it = g_vAlarmTime.begin(); it != g_vAlarmTime.end(); it++ )
         {
-            nCode = -1;    //其它错误返回
+            it->onceADay = false;
         }
-        printf("curl send msg error: pRes=%s, lResCode=%ld", pRes, lResCode);
     }
 
-    return nCode;
-}
-
-
-char *pszNian[]={"","十","百","千","万","十","百","千","亿"};
-char *pszShu[]={"零","壹","贰","叁","肆","伍","陆","柒","捌","玖"};
-//char digitToChinese[200];
-
-//digitToChinese
-string digitToChinese(int a,int b)
-{
-    static string d2c;
-    if (0 == b){
-        d2c.clear();
-    }
-
-    if(a>=10)
+    //匹配时间
+    for (vector<AlarmTime>::iterator it = g_vAlarmTime.begin(); it != g_vAlarmTime.end(); it++ )
     {
-        digitToChinese(a/10,b+1);
+        if (it->hour == Local->tm_hour && it->minute == Local->tm_min && it->onceADay == false){
+            it->onceADay = true;
+            return true;
+        }
     }
-    d2c += pszShu[a%10];
-    d2c += pszNian[b];
-    //sprintf(digitToChinese, "%s%s%s",digitToChinese, pszShu[a%10],pszNian[b]);
-    return d2c;
+    return false;
 }
-
-
-
-int Get(const std::string & strUrl, std::string & strResponse)
+void getWeather()
 {
-    CURLcode res;
-    CURL* curl = curl_easy_init();
-    if(NULL == curl)
-    {
-        return CURLE_FAILED_INIT;
-    }
-
-    //std:string strUrlUTF8 = GBKToUTF8(strUrl);   //服务器采用UTF8方式
-    curl_easy_setopt(curl, CURLOPT_URL, strUrl.c_str());
-    curl_easy_setopt(curl, CURLOPT_READFUNCTION, NULL);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, OnWriteData);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&strResponse);
-    /**
-    * 当多个线程都使用超时处理的时候，同时主线程中有sleep或是wait等操作。
-    * 如果不设置这个选项，libcurl将会发信号打断这个wait从而导致程序退出。
-    */
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3);
-    res = curl_easy_perform(curl);
-    dealResCode(curl, res); //处理错误码
-    curl_easy_cleanup(curl);
-    return res;
+//    cout << "void getWeather()" << endl;
+    mojiWeatherAPI();
 }
-
-//需要jsoncpp库
-// bool sojsonWeatherAPI(){
-// 	string strOutData;
-//     Json::Reader reader; 
-//     Json::FastWriter writer;
-//     Json::Value jsonOutData; 
-
-//     string strIndata("https://www.sojson.com/open/api/weather/json.shtml?city=%E6%A0%AA%E6%B4%B2");
-
-//     int CURLCode = Get(strIndata, strOutData); //"\{\"car_num\":\"湘B12345\",\"parking_code\":\"C00002\"}"
-//     if(strOutData[0] == '{'){//json字串
-//         reader.parse(strOutData, jsonOutData);
-//         if (jsonOutData["status"].asString() == "200"){//成功
-//             //printf("成功 入参 %s, 出参%s", strIndata.c_str(), strOutData.c_str());
-//             string sound("mplayer \"http://tts.baidu.com/text2audio?");
-//             sound += "idx=1&cuid=baidu_speech_demo&cod=2&lan=zh&ctp=1&pdt=1&spd=5&per=4&vol=5&pit=5";
-//             sound += "&tex=";
-//             sound += "温度:";
-//             dToC(atoi(jsonOutData["data"]["wendu"].asString().c_str()), 0);
-//             sound += digitToChinese;
-//             sound += ",感冒:";
-//             sound += jsonOutData["data"]["ganmao"].asString();
-//             sound += "\"";
-//             //sprintf(sound.c_str(), "mplayer \"http://tts.baidu.com/text2audio?idx=1&cuid=baidu_speech_demo&cod=2&lan=zh&ctp=1&pdt=1&spd=5&per=4&vol=5&pit=5&tex=温度%d,感冒:%s", jsonOutData["data"]["wendu"].asFloat(), jsonOutData["data"]["ganmao"].asString().c_str());
-//             printf("%s\n", sound.c_str());
-//             system(sound.c_str());
-//             return true;
-//         }
-//     }
-//     printf("失败 入参 %s, 出参%s",  strIndata.c_str(), strOutData.c_str());
-//     return false;
-// }
-
 
 // match 1: 22 优 (with a length of 6)
 // match 2: 20 (with a length of 2)
@@ -142,103 +117,48 @@ int Get(const std::string & strUrl, std::string & strResponse)
 // match 4: 87 (with a length of 10)
 // match 5: 西北风2级 (with a length of 13)
 // match 6: 冷热适宜，感觉很舒适。 (with a length of 33)
-std::smatch results;
-
-bool mojiRegexSearch(string html)
-{   
-    std::string pattern("wea_alert clearfix[\\s\\S]*?<em>(\\d*).*</em>[\\s\\S]*?wea_weather clearfix[\\s\\S]*?<em>(.*)</em>[\\s\\S]*?<b>(.*)</b>[\\s\\S]*?湿度 (\\d*)%</span>[\\s\\S]*?<em>(.*)</em>[\\s\\S]*?<em>(.*)</em>");
-    std::regex r(pattern);
-
-    if (regex_search(html,results,r)){
-        for (unsigned i=0; i<results.size(); ++i) {
-            std::cout << "match " << i << ": " << results[i];
-            std::cout << " (with a length of " << results[i].length() << ")\n";
-        }    
-        return true;
-    }
-    return false;
-}
-
-char strtime[100] = {0};
-bool mojiWeatherAPI(){
-    string strOutData;
-    Json::Reader reader; 
-    Json::FastWriter writer;
-    Json::Value jsonOutData; 
-
-    string strIndata("http://tianqi.moji.com/");
-
-    int CURLCode = Get(strIndata, strOutData); 
-    if(CURLCode == CURLE_OK){//成功
-        return mojiRegexSearch(strOutData);
-    }
-    printf("失败 入参 %s, 出参%s",  strIndata.c_str(), strOutData.c_str());
-    return false;
-}
-
-
-int old_minute = 0;
-
-bool GetTime()
+void playWeather()
 {
-    time_t timep;
-    time(&timep);
-    tm *Local = localtime(&timep);
-
-    if (Local->tm_min % 4 == 0 && 30 == Local->tm_sec && old_minute != Local->tm_min){
-        system("mplayer \"heartbeat.mp3\"");
-        old_minute = Local->tm_min;
-    }
-    if (7 == Local->tm_hour && 30 == Local->tm_min){
-        string hour = digitToChinese(Local->tm_hour, 0);
-        string min = digitToChinese(Local->tm_min, 0);
-        string sec = digitToChinese(Local->tm_sec, 0);
-        sprintf(strtime, "%04d年%02d月%02d日 %s点%s分%s秒", Local->tm_year + 1900, Local->tm_mon + 1, Local->tm_mday, hour.c_str(), min.c_str(), sec.c_str());
-
-        return true;
-    }
-    //sprintf(strtime, "%04d-%02d-%02d %02d:%02d:%02d", Local->tm_year + 1900, Local->tm_mon + 1, Local->tm_mday, Local->tm_hour, Local->tm_min, Local->tm_sec);
-
-    return false;
-}
-
-// text = '早上好！今天是%s,天气%s,温度%s摄氏度,%s,%s,%s,%s' % today, weather, temp, sd, wind, aqi, info)
-//http://tts.baidu.com/text2audio?idx=1&tex=早上好&cuid=baidu_speech_demo&cod=2&lan=zh&ctp=1&pdt=1&spd=5&per=4&vol=5&pit=5",
-void PlayMusic(){
     string sound("mplayer \"http://tts.baidu.com/text2audio?");
     sound += "idx=1&cuid=baidu_speech_demo&cod=2&lan=zh&ctp=1&pdt=1&spd=5&per=4&vol=5&pit=5";
     sound += "&tex=";
     sound += "早上好！今天是";
-    sound += strtime;
+    sound += g_szCurrentTime;
     sound += ",天气";
     sound += results[3];
     sound += ",温度";
-    sound += digitToChinese(atoi(results.str(2).c_str()), 0);
+    sound += digitToChinese(atoi(results.str(2).c_str()));
     sound += "摄氏度,湿度百分之";
-    sound += digitToChinese(atoi(results.str(4).c_str()), 0);
+    sound += digitToChinese(atoi(results.str(4).c_str()));
     sound += "，";
     sound += results[5];
     sound += "，空气质量";
-    sound += digitToChinese(atoi(results.str(1).c_str()), 0);
+    sound += digitToChinese(atoi(results.str(1).c_str()));
     sound += results[6];
     sound += "\"";
 
-    printf("%s\n", sound.c_str());
-    system("timeout 120 x-www-browser https://douban.fm/");
+    cout << sound << endl;
+
     system(sound.c_str());
     system(sound.c_str());
     system(sound.c_str());
+
+}
+void playTime()
+{
+    //cout << "playMusic()" << endl;
+    time_t timep;
+    time(&timep);
+    tm *Local = localtime(&timep);
+    string hour = digitToChinese(Local->tm_hour);
+    string min = digitToChinese(Local->tm_min);
+    string sec = digitToChinese(Local->tm_sec);
+    sprintf(g_szCurrentTime, "%04d年%02d月%02d日 %s点%s分%s秒", Local->tm_year + 1900, Local->tm_mon + 1, Local->tm_mday, hour.c_str(), min.c_str(), sec.c_str());
+
 }
 
-
-int main(){
-
-    while(1){
-        if (GetTime() && mojiWeatherAPI()){
-            PlayMusic();
-        }
-        system("sleep 0.5");
-    }
-
-    return 0;
+// text = '早上好！今天是%s,天气%s,温度%s摄氏度,%s,%s,%s,%s' % today, weather, temp, sd, wind, aqi, info)
+//http://tts.baidu.com/text2audio?idx=1&tex=早上好&cuid=baidu_speech_demo&cod=2&lan=zh&ctp=1&pdt=1&spd=5&per=4&vol=5&pit=5",
+void playMusic(){
+    system("timeout 120 x-www-browser https://douban.fm/");
 }
